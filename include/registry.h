@@ -1,6 +1,7 @@
 #ifndef RSJFW_REGISTRY_H
 #define RSJFW_REGISTRY_H
 
+#include <cstdio>
 #include <string>
 #include <vector>
 #include <map>
@@ -8,6 +9,8 @@
 #include <optional>
 #include <variant>
 #include <shared_mutex>
+#include <chrono>
+#include "logger.h"
 #include <filesystem>
 
 namespace rsjfw {
@@ -95,6 +98,21 @@ public:
     void add(const std::string& path, const std::string& name, const std::string& val, const std::string& type = "REG_SZ");
     void transplant(const std::string& path, Registry& source);
     bool commit();
+
+    void forceReloadUser() {
+        std::lock_guard<std::shared_mutex> lock(mutex_);
+        namespace fs = std::filesystem;
+        fs::path userRegPath = fs::path(prefixDir_) / "user.reg";
+        
+        // Force reload even if timestamp hasn't changed
+        if (loadHive("user.reg", currentUser_)) {
+            lastUser_ = fs::last_write_time(userRegPath);
+            LOG_DEBUG("Force reloaded user registry from %s", userRegPath.c_str());
+        } else {
+            LOG_ERROR("Failed to force reload user registry from %s", userRegPath.c_str());
+        }
+    }
+
     
     std::shared_ptr<RegistryKey> getCurrentUser() { return currentUser_; }
 

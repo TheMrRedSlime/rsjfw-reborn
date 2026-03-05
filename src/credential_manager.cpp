@@ -2,6 +2,7 @@
 #include "logger.h"
 #include "path_manager.h"
 #include "roblox_api.h"
+#include <thread>
 #include <algorithm>
 #include <filesystem>
 #include <fstream>
@@ -105,32 +106,60 @@ void CredentialManager::syncAllRunners(std::shared_ptr<Prefix> activePrefix) {
   }
 }
 
-std::vector<RobloxUser>
-CredentialManager::getLoggedInUsers(std::shared_ptr<Prefix> prefix) {
+
+std::vector<RobloxUser> CredentialManager::getLoggedInUsers(std::shared_ptr<Prefix> prefix) {
   std::vector<RobloxUser> users;
   std::string path = "HKCU\\Software\\Roblox\\RobloxStudio\\LoggedInUsersStore"
                      "\\https:\\www.roblox.com";
-  auto res = prefix->registryQuery(path, "users");
+  
+  // Try up to 3 times with reload in between
+  for (int attempt = 1; attempt <= 3; attempt++) {
+    auto res = prefix->registryQuery(path, "users");
+    
+    if (res) {
+      std::string raw = res.value();
+      while (!raw.empty() && (raw.back() == ';' || raw.back() == ' '))
+        raw.pop_back();
 
-  if (res) {
-    std::string raw = res.value();
-    while (!raw.empty() && (raw.back() == ';' || raw.back() == ' '))
-      raw.pop_back();
-
-    try {
-      json j = json::parse(raw);
-      for (auto &[id, data] : j.items()) {
-        auto info = RobloxAPI::getUserInfo(id);
-        RobloxUser user;
-        user.userId = id;
-        user.username = info.username;
-        user.profilePicUrl = info.profilePicUrl;
-        users.push_back(user);
+      try {
+        if (raw.empty() || raw == "{}" || raw == "null") {
+          LOG_DEBUG("Empty users store on attempt %d", attempt);
+          if (attempt < 3) {
+            // Force registry reload and try again
+            prefix->getRegistry().forceReloadUser();
+            continue;
+          }
+          return users;
+        }
+        
+        json j = json::parse(raw);
+        for (auto &[id, data] : j.items()) {
+          auto info = RobloxAPI::getUserInfo(id);
+          RobloxUser user;
+          user.userId = id;
+          user.username = info.username;
+          user.profilePicUrl = info.profilePicUrl;
+          users.push_back(user);
+        }
+        return users; // Success, return
+        
+      } catch (const std::exception &e) {
+        LOG_ERROR("Failed to parse LoggedInUsersStore JSON (attempt %d): %s", 
+                  attempt, e.what());
+        LOG_DEBUG("Corrupt JSON data: %s", raw.c_str());
+        
+        if (attempt < 3) {
+          // Force registry reload and try again
+          prefix->getRegistry().forceReloadUser();
+          std::this_thread::sleep_for(std::chrono::milliseconds(100 * attempt));
+        }
       }
-    } catch (const std::exception &e) {
-      LOG_ERROR("Failed to parse LoggedInUsersStore JSON: %s", e.what());
+    } else {
+      LOG_DEBUG("No registry value found on attempt %d", attempt);
+      break;
     }
   }
+  
   return users;
 }
 

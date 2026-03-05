@@ -506,29 +506,107 @@ bool Registry::loadHive(const std::string &f, std::shared_ptr<RegistryKey> &k) {
   fs::path p = fs::path(prefixDir_) / f;
   if (!fs::exists(p))
     return false;
-  std::ifstream is(p);
-  if (!is.is_open())
-    return false;
-  std::string firstLine;
-  if (std::getline(is, firstLine)) {
-    std::string secondLine;
-    if (std::getline(is, secondLine) &&
-        secondLine.find(";; All keys relative to ") == 0) {
-      std::string rel = secondLine.substr(24);
-      if (f == "system.reg")
-        systemRelativePath_ = rel;
-      else
-        userRelativePath_ = rel;
+  
+  const int maxTotalTimeMs = 60000; // 60 seconds
+  int retryDelayMs = 100; // Start with 100ms
+  int totalElapsedMs = 0;
+  int attempt = 1;
+  
+  std::ifstream is;
+  auto startTime = std::chrono::steady_clock::now();
+  
+  while (totalElapsedMs < maxTotalTimeMs) {
+    // Clear error state and try to open
+    is.clear();
+    is.open(p);
+    
+    if (is.is_open()) {
+      LOG_DEBUG("Successfully opened %s after %dms (attempt %d)", 
+                f.c_str(), totalElapsedMs, attempt);
+      break;
     }
-    is.seekg(0);
-    auto nk = std::make_shared<RegistryKey>();
-    if (nk->load(is)) {
-      k = nk;
-      LOG_INFO("Loaded hive %s: %zu subkeys", f.c_str(), k->subkeys.size());
-      return true;
+    
+    // Calculate next backoff
+    auto now = std::chrono::steady_clock::now();
+    totalElapsedMs = std::chrono::duration_cast<std::chrono::milliseconds>(
+                     now - startTime).count();
+    
+    if (totalElapsedMs >= maxTotalTimeMs) {
+      LOG_ERROR("Failed to open %s after %dms (%d attempts), file may be permanently locked", 
+                f.c_str(), totalElapsedMs, attempt);
+      return false;
     }
+    
+    int remainingMs = maxTotalTimeMs - totalElapsedMs;
+    int actualDelayMs = std::min(retryDelayMs, remainingMs);
+    
+    LOG_DEBUG("Failed to open %s (attempt %d), retrying in %dms (elapsed: %dms/%dms)", 
+              f.c_str(), attempt, actualDelayMs, totalElapsedMs, maxTotalTimeMs);
+    
+    std::this_thread::sleep_for(std::chrono::milliseconds(actualDelayMs));
+    
+    retryDelayMs = std::min(retryDelayMs * 2, 5000);
+    attempt++;
+    
+    now = std::chrono::steady_clock::now();
+    totalElapsedMs = std::chrono::duration_cast<std::chrono::milliseconds>(
+                     now - startTime).count();
   }
-  return false;
+  
+  try {
+    std::string firstLine;
+    if (!std::getline(is, firstLine)) {
+      LOG_ERROR("Failed to read first line from %s", f.c_str());
+      return false;
+    }
+    
+    std::string secondLine;
+    if (std::getline(is, secondLine)) {
+      if (secondLine.find(";; All keys relative to ") == 0) {
+        std::string rel = secondLine.substr(24);
+        if (f == "system.reg")
+          systemRelativePath_ = rel;
+        else
+          userRelativePath_ = rel;
+      }
+    } else {
+      LOG_WARN("Could not read second line from %s, continuing anyway", f.c_str());
+    }
+    
+    is.clear();
+    is.seekg(0, std::ios::beg);
+    if (!is) {
+      LOG_ERROR("Failed to seek to beginning of %s", f.c_str());
+      return false;
+    }
+    
+    auto nk = std::make_shared<RegistryKey>();
+    if (!nk->load(is)) {
+      LOG_ERROR("Failed to parse registry hive %s", f.c_str());
+      return false;
+    }
+    
+    k = nk;
+    LOG_INFO("Loaded hive %s: %zu subkeys (took %dms, %d attempts)", 
+             f.c_str(), k->subkeys.size(), totalElapsedMs, attempt);
+    
+    // Verify critical paths exist
+    if (f == "user.reg") {
+      auto rbxKey = k->query("Software\\Roblox\\RobloxStudio");
+      if (rbxKey) {
+        LOG_DEBUG("Found RobloxStudio key in registry");
+      }
+    }
+    
+    return true;
+    
+  } catch (const std::exception& e) {
+    LOG_ERROR("Exception while loading %s: %s", f.c_str(), e.what());
+    return false;
+  } catch (...) {
+    LOG_ERROR("Unknown exception while loading %s", f.c_str());
+    return false;
+  }
 }
 
 bool Registry::saveHive(const std::string &f, std::shared_ptr<RegistryKey> &k,

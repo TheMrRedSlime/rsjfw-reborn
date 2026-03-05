@@ -378,8 +378,19 @@ void Orchestrator::worker(std::string arg) {
     }
 
     if (runner->getPrefix()) {
+      auto prefix = runner->getPrefix();  // Store it
+      
       setStatus(0.85f, "syncing credentials...");
-      CredentialManager::instance().syncAllRunners(runner->getPrefix());
+      CredentialManager::instance().syncAllRunners(prefix);
+      
+      LOG_DEBUG("Force reloading user registry before checking logged-in users");
+      prefix->getRegistry().forceReloadUser();
+
+      auto users = CredentialManager::instance().getLoggedInUsers(prefix);
+      for (const auto &user : users) {
+        LOG_INFO("Active Roblox session detected for user: %s (ID: %s)",
+                user.username.c_str(), user.userId.c_str());
+      }
     }
 
     setState(LauncherState::APPLYING_CONFIG);

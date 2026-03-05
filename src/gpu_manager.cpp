@@ -127,6 +127,13 @@ std::map<std::string, std::string> GpuManager::getEnvVars(const GpuInfo &gpu) {
     } catch (...) {
     }
 
+    auto devices = discoverDevices();
+    if (devices.size() <= 1) {
+        // Only one GPU, don't set DRI_PRIME
+        return env;
+    }
+
+
     if (cardIndex != -1) {
       env["DRI_PRIME"] = std::to_string(cardIndex);
     }

@@ -99,22 +99,10 @@ public:
     void transplant(const std::string& path, Registry& source);
     bool commit();
 
-    void forceReloadUser() {
-        std::lock_guard<std::shared_mutex> lock(mutex_);
-        namespace fs = std::filesystem;
-        fs::path userRegPath = fs::path(prefixDir_) / "user.reg";
-        
-        // Force reload even if timestamp hasn't changed
-        if (loadHive("user.reg", currentUser_)) {
-            lastUser_ = fs::last_write_time(userRegPath);
-            LOG_DEBUG("Force reloaded user registry from %s", userRegPath.c_str());
-        } else {
-            LOG_ERROR("Failed to force reload user registry from %s", userRegPath.c_str());
-        }
-    }
-
     
     std::shared_ptr<RegistryKey> getCurrentUser() { return currentUser_; }
+    void forceReloadUser();
+
 
 private:
     std::string prefixDir_;

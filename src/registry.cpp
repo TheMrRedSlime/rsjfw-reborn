@@ -502,6 +502,20 @@ void Registry::checkAndReload() {
   }
 }
 
+void Registry::forceReloadUser() {
+  std::unique_lock<std::shared_mutex> lock(mutex_);
+  fs::path userRegPath = fs::path(prefixDir_) / "user.reg";
+  
+  LOG_DEBUG("Force reloading user registry from %s", userRegPath.c_str());
+  
+  if (loadHive("user.reg", currentUser_)) {
+    lastUser_ = fs::last_write_time(userRegPath);
+    LOG_DEBUG("Successfully force reloaded user registry");
+  } else {
+    LOG_ERROR("Failed to force reload user registry");
+  }
+}
+
 bool Registry::loadHive(const std::string &f, std::shared_ptr<RegistryKey> &k) {
   fs::path p = fs::path(prefixDir_) / f;
   if (!fs::exists(p))

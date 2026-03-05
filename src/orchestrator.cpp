@@ -186,70 +186,81 @@ void Orchestrator::worker(std::string arg) {
     auto &rbx = downloader::RobloxManager::instance();
     std::string guid;
 
-    auto installed = rbx.getInstalledVersions();
-    if (!installed.empty()) {
-      std::sort(
-          installed.begin(), installed.end(),
-          [&](const std::string &a, const std::string &b) {
-            try {
-              return fs::last_write_time(PathManager::instance().versions() /
-                                         a / "AppSettings.xml") >
-                     fs::last_write_time(PathManager::instance().versions() /
-                                         b / "AppSettings.xml");
-            } catch (...) {
-              return a > b;
-            }
-          });
-      guid = installed[0];
-      LOG_DEBUG("using local version for speed: %s", guid.c_str());
-
-      if (!fastPath) {
-          std::thread([&rbx, &cfg]() {
-            try {
-              auto latest = rbx.getLatestVersionGUID(cfg.channel);
-              LOG_DEBUG("background update check result: %s", latest.c_str());
-            } catch (...) {
-            }
-          }).detach();
-      }
-    }
-
-    if (guid.empty() && !stop_) {
-      guid = rbx.getLatestVersionGUID(cfg.channel);
+    // First get the latest version GUID
+    if (!stop_) {
+        guid = rbx.getLatestVersionGUID(cfg.channel);
+        LOG_DEBUG("latest version from channel %s: %s", cfg.channel.c_str(), guid.c_str());
     }
 
     if (guid.empty()) {
-      auto versions = rbx.getInstalledVersions();
-      if (!versions.empty()) {
-        std::sort(versions.begin(), versions.end());
-        guid = versions.back();
-      }
+        // Fallback to installed versions if we couldn't get latest
+        auto installed = rbx.getInstalledVersions();
+        if (!installed.empty()) {
+            std::sort(
+                installed.begin(), installed.end(),
+                [&](const std::string &a, const std::string &b) {
+                    try {
+                        return fs::last_write_time(PathManager::instance().versions() /
+                                                a / "AppSettings.xml") >
+                              fs::last_write_time(PathManager::instance().versions() /
+                                                b / "AppSettings.xml");
+                    } catch (...) {
+                        return a > b;
+                    }
+                });
+            guid = installed[0];
+            LOG_DEBUG("using most recent local version: %s", guid.c_str());
+        }
     }
 
     if (guid.empty()) {
-      setError("failed to resolve roblox version");
-      return;
+        setError("failed to resolve roblox version");
+        return;
     }
 
-    LOG_DEBUG("resolved studio version: %s", guid.c_str());
+    LOG_DEBUG("target studio version: %s", guid.c_str());
 
     if (stop_) {
-      setState(LauncherState::FINISHED);
-      return;
+        setState(LauncherState::FINISHED);
+        return;
     }
 
     setState(LauncherState::DOWNLOADING_ROBLOX);
-    if (!rbx.isInstalled(guid)) {
-      LOG_INFO("installing roblox studio version %s", guid.c_str());
-      bool ok = rbx.installVersion(
-          guid, [&](float p, std::string s) { setStatus(p, "roblox: " + s); });
-      if (!ok) {
-        setError("failed to install roblox studio");
-        return;
-      }
+
+    // Check if we need to install/update
+    bool needsInstall = true;
+    if (rbx.isInstalled(guid)) {
+        // Version is installed, check if it's the latest
+        auto installed = rbx.getInstalledVersions();
+        std::string latestLocal;
+        if (!installed.empty()) {
+            std::sort(installed.begin(), installed.end());
+            latestLocal = installed.back();
+        }
+        
+        // If this is the latest installed version AND it matches target GUID, we're good
+        if (!latestLocal.empty() && latestLocal == guid) {
+            needsInstall = false;
+            LOG_DEBUG("roblox version %s already installed and up to date", guid.c_str());
+            setStatus(1.0f, "roblox: already up to date");
+        } else {
+            LOG_INFO("updating roblox from %s to %s", 
+                    latestLocal.empty() ? "none" : latestLocal.c_str(), 
+                    guid.c_str());
+        }
+    }
+
+    if (needsInstall) {
+        LOG_INFO("installing/updating roblox studio version %s", guid.c_str());
+        bool ok = rbx.installVersion(
+            guid, [&](float p, std::string s) { setStatus(p, "roblox: " + s); });
+        if (!ok) {
+            setError("failed to install roblox studio");
+            return;
+        }
     } else {
-      LOG_DEBUG("roblox version %s already installed", guid.c_str());
-      setStatus(1.0f, "roblox: already installed");
+        LOG_DEBUG("roblox version %s already installed", guid.c_str());
+        setStatus(1.0f, "roblox: already installed");
     }
 
     if (stop_) {
